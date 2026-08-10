@@ -30,5 +30,5 @@ sudo ./battery.sh
 Execute the script with the uninstallation flag to purge the kernel module, remove configuration changes, and roll back system modifications:
 
 ```bash
-sudo ./installer.sh -u
+sudo ./battery.sh -u
 ```

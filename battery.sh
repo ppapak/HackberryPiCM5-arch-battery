@@ -65,11 +65,13 @@ if [ ! -f "$DRIVER_SRC" ]; then
 fi
 
 # Baseline reset logic
-# Logic: Revert local edits to ensure sed operations start from clean source
-git checkout -- "$DRIVER_SRC" "$DTS_SRC"
+# Logic: Best-effort revert to clean source. Not load-bearing: the patches below
+# are individually guarded, so they stay correct when this is not a git checkout.
+git checkout -- "$DRIVER_SRC" "$DTS_SRC" 2>/dev/null || true
 
 # Modify existing DTS file for peripheral controller compatibility
-sed -i 's/interrupt-parent = <&gpio>;/interrupt-parent = <\&rp1_gpio>;/' "$DTS_SRC"
+grep -q 'interrupt-parent = <&rp1_gpio>;' "$DTS_SRC" || \
+    sed -i 's/interrupt-parent = <&gpio>;/interrupt-parent = <\&rp1_gpio>;/' "$DTS_SRC"
 
 # Cleanup existing module state
 remove_dkms_module
@@ -77,8 +79,11 @@ rm -rf "$SRC_DIR"
 
 # Local source modification
 # Requirement: Modern kernel property handling compatibility
-sed -i '1i #include <linux/property.h>' "$DRIVER_SRC"
-sed -i 's/psycfg\.of_node = dev->of_node;/psycfg.fwnode = dev_fwnode(dev);/' "$DRIVER_SRC"
+# Each patch is a no-op when already applied, so re-runs cannot stack edits
+grep -q 'linux/property\.h' "$DRIVER_SRC" || \
+    sed -i '1i #include <linux/property.h>' "$DRIVER_SRC"
+grep -q 'psycfg\.fwnode' "$DRIVER_SRC" || \
+    sed -i 's/psycfg\.of_node = dev->of_node;/psycfg.fwnode = dev_fwnode(dev);/' "$DRIVER_SRC"
 
 # DKMS file migration
 mkdir -p "$SRC_DIR"
@@ -89,7 +94,14 @@ cp "$DRIVER_SRC" dkms.conf Makefile "$SRC_DIR/"
 dkms install -m "$MODULE_NAME" -v "$MODULE_VERSION"
 
 # Device Tree Overlay compilation
-dtc -@ -I dts -O dtb -o "$OVERLAY_PATH/$OVERLAY_NAME.dtbo" "$DTS_SRC"
+# Logic: Compile to a temporary file alongside the target so a failed or
+# interrupted dtc run cannot leave a truncated .dtbo in the boot partition.
+# mktemp creates the file 0600, so the mode is set explicitly before the rename.
+TMP_DTBO=$(mktemp "$OVERLAY_PATH/.$OVERLAY_NAME.XXXXXX")
+trap 'rm -f "$TMP_DTBO"' EXIT
+dtc -@ -I dts -O dtb -o "$TMP_DTBO" "$DTS_SRC"
+chmod 0644 "$TMP_DTBO"
+mv "$TMP_DTBO" "$OVERLAY_PATH/$OVERLAY_NAME.dtbo"
 
 # Persistence logic for boot configuration
 # Purges redundant overlay configuration and appends new target hardware overlay
